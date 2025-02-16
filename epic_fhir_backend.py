@@ -13,7 +13,7 @@ app = FastAPI()
 logger = logging.getLogger("epic_fhir_backend")
 logger.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(message)s')  # Simplified log format
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
@@ -22,7 +22,7 @@ FHIR_SERVER_BASE_URL = "https://fhir.epic.com/interconnect-fhir"
 TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
 CLIENT_ID = "your-client-id"  # Replace with your client ID
 CLIENT_SECRET = "your-client-secret"  # Replace with your client secret
-JWK_SET_URL = "your-jwk-set-url"  # Replace with your JWK set URL
+PRIVATE_KEY_PATH = "your-private-key.pem"  # Replace with your private key path
 PATIENT_RESOURCE_URL = f"{FHIR_SERVER_BASE_URL}/Patient"
 
 
@@ -30,10 +30,9 @@ PATIENT_RESOURCE_URL = f"{FHIR_SERVER_BASE_URL}/Patient"
 def create_jwt():
     # Prepare JWT payload and header
     headers = {
-        "alg": "RS384",
+        "alg": "RS384",  # You can change this to RS256 if preferred
         "typ": "JWT",
-        "kid": "your-kid",  # Replace with your key ID
-        "jku": JWK_SET_URL
+        "kid": "your-kid"  # Replace with your key ID
     }
 
     payload = {
@@ -46,8 +45,8 @@ def create_jwt():
         "iat": int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     }
 
-    # Load private key and sign the JWT (for this example, we'll use a simple RS384 key)
-    private_key = open("your-private-key.pem", "r").read()  # Replace with your private key file
+    # Load private key and sign the JWT
+    private_key = open(PRIVATE_KEY_PATH, "r").read()  # Load private key from file
     jwt_token = jwt.encode(payload, private_key, algorithm="RS384", headers=headers)
 
     return jwt_token
