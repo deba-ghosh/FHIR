@@ -1,124 +1,96 @@
 import logging
-import datetime
-import requests
 import jwt
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import Optional
+import requests
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, HTTPException
 
-# FastAPI instance
+# FastAPI app initialization
 app = FastAPI()
 
-# Configure logger
-logger = logging.getLogger("epic_fhir_backend")
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-formatter = logging.Formatter('%(message)s')  # Simplified log format
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+# Setup logging
+logging.basicConfig(
+    format='%(message)s',
+    level=logging.INFO
+)
 
-# FHIR Server URLs and authentication details
-FHIR_SERVER_BASE_URL = "https://fhir.epic.com/interconnect-fhir"
-TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
-CLIENT_ID = "your-client-id"  # Replace with your client ID
-CLIENT_SECRET = "your-client-secret"  # Replace with your client secret
-PRIVATE_KEY_PATH = "your-private-key.pem"  # Replace with your private key path
-PATIENT_RESOURCE_URL = f"{FHIR_SERVER_BASE_URL}/Patient"
+# Config variables (Make sure to replace these with your actual values)
+CLIENT_ID = "your-client-id"
+PRIVATE_KEY_PATH = "path/to/your/private_key.pem"
+AUTH_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
+FHIR_BASE_URL = "https://fhir.epic.com/interconnect-fhir/api/FHIR/dstu2"
 
 
-# JWT creation function
-def create_jwt():
-    # Prepare JWT payload and header
-    headers = {
-        "alg": "RS384",  # You can change this to RS256 if preferred
-        "typ": "JWT",
-        "kid": "your-kid"  # Replace with your key ID
-    }
-
+# Helper function to generate JWT
+def generate_jwt():
+    private_key = open(PRIVATE_KEY_PATH, "r").read()
+    now = datetime.now(timezone.utc)
     payload = {
         "iss": CLIENT_ID,
         "sub": CLIENT_ID,
-        "aud": TOKEN_URL,
-        "jti": str(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-        "exp": int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)).timestamp()),
-        "nbf": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-        "iat": int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        "aud": AUTH_URL,
+        "jti": str(now.timestamp()),
+        "exp": int((now + timedelta(minutes=5)).timestamp()),
+        "nbf": int(now.timestamp()),
+        "iat": int(now.timestamp())
     }
 
-    # Load private key and sign the JWT
-    private_key = open(PRIVATE_KEY_PATH, "r").read()  # Load private key from file
-    jwt_token = jwt.encode(payload, private_key, algorithm="RS384", headers=headers)
-
-    return jwt_token
+    # Encode JWT with RS256
+    encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256", headers={"alg": "RS256", "typ": "JWT"})
+    return encoded_jwt
 
 
-# Token request function
+# Function to get access token
 def get_access_token():
-    logger.info("Generating JWT for OAuth2 authentication...")
-    jwt_token = create_jwt()
-
-    # Exchange JWT for access token
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "assertion": jwt_token
+    jwt_token = generate_jwt()
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': f'Bearer {jwt_token}'
     }
 
-    logger.info(f"Sending request to {TOKEN_URL} for access token...")
-    response = requests.post(TOKEN_URL, data=data, headers=headers)
+    data = {
+        'grant_type': 'client_credentials',
+        'scope': 'patient/Patient.read'
+    }
 
-    if response.status_code == 200:
-        access_token = response.json().get("access_token")
-        logger.info("Successfully authenticated and received access token.")
-        return access_token
-    else:
-        logger.error(f"Authentication failed. Status Code: {response.status_code}")
-        logger.error(response.text)
-        return None
+    response = requests.post(AUTH_URL, headers=headers, data=data)
+    if response.status_code != 200:
+        logging.error(f"Failed to get access token: {response.text}")
+        raise HTTPException(status_code=response.status_code, detail=f"Failed to get access token: {response.text}")
 
-
-# Fetch patient resource
-def fetch_patient_data():
-    access_token = get_access_token()
-    if not access_token:
-        return {"error": "Failed to authenticate"}
-
-    # Request patient data from the FHIR server
-    headers = {"Authorization": f"Bearer {access_token}"}
-    logger.info(f"Sending request to {PATIENT_RESOURCE_URL} to fetch patient data...")
-    response = requests.get(PATIENT_RESOURCE_URL, headers=headers)
-
-    if response.status_code == 200:
-        logger.info(f"Successfully fetched patient data.")
-        return response.json()
-    else:
-        logger.error(f"Failed to fetch patient data. Status Code: {response.status_code}")
-        logger.error(response.text)
-        return {"error": f"Failed to fetch patient. Status Code: {response.status_code}"}
+    access_token = response.json().get('access_token')
+    logging.info("Access token obtained successfully.")
+    return access_token
 
 
-# Pydantic model to represent the patient data
-class PatientData(BaseModel):
-    resourceType: str
-    id: str
-    name: Optional[str]
-
-
-# Health check route
+# Endpoint to check health
 @app.get("/health")
-def health_check():
+async def health_check():
     return {"status": "OK"}
 
 
-# Endpoint to call Patient resource
+# Endpoint to get patient information
 @app.get("/patient")
-def get_patient_data():
-    patient_data = fetch_patient_data()
-    if "error" in patient_data:
-        return {"error": patient_data["error"]}
+async def get_patient():
+    try:
+        access_token = get_access_token()
+    except HTTPException:
+        raise HTTPException(status_code=500, detail="Authentication failed.")
 
-    # Parse the patient data and return
-    return PatientData(resourceType=patient_data.get("resourceType", ""), id=patient_data.get("id", ""),
-                       name=patient_data.get("name", ""))
+    # Call Epic FHIR Patient resource
+    patient_url = f"{FHIR_BASE_URL}/Patient"
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    response = requests.get(patient_url, headers=headers)
+
+    if response.status_code == 404:
+        logging.error(f"Patient resource not found. Status Code: {response.status_code}")
+        raise HTTPException(status_code=404, detail="Patient resource not found.")
+    elif response.status_code != 200:
+        logging.error(f"Failed to fetch patient. Status Code: {response.status_code}, Response: {response.text}")
+        raise HTTPException(status_code=response.status_code, detail=f"Failed to fetch patient. {response.text}")
+
+    patient_data = response.json()
+    logging.info("Patient data fetched successfully.")
+    return patient_data
