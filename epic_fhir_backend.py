@@ -1,84 +1,83 @@
-from fastapi import FastAPI, HTTPException
-import jwt
-import time
-import uuid
+import logging
 import requests
-from pydantic import BaseModel
+import jwt
+import uuid
+import time
+from fastapi import FastAPI, HTTPException
 
-# FastAPI instance
-app = FastAPI(title="Epic FHIR Backend Integration", description="OAuth2 Client Credentials with JWT", version="1.0")
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Configuration
-client_id = "4220d596-97d7-4488-a517-989486bdcec5"  # Replace with your Epic client ID
-token_url = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"  # Replace with Epic token endpoint
-fhir_url = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4/Patient"  # Replace with FHIR base URL
-private_key_path = 'C:/Users/User/Documents/Deba/Epic/FHIR Projects/Backend/privatekey.pem'  # Path to your RSA private key
+app = FastAPI()
 
-# Load private key
-with open(private_key_path, "r") as key_file:
-    private_key = key_file.read()
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str
-    expires_in: int
+# Epic OAuth & FHIR Configuration
+CLIENT_ID = "4220d596-97d7-4488-a517-989486bdcec5"  # Replace with your Epic client ID
+PRIVATE_KEY_PATH = 'C:/Users/User/Documents/Deba/Epic/FHIR Projects/Backend/privatekey.pem'  # Path to your private key for JWT signing
+TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
+FHIR_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 
 
-class PatientResponse(BaseModel):
-    status_code: int
-    data: dict
-
-
+# Function to generate JWT for authentication
 def generate_jwt():
-    """Generate JWT for client authentication"""
-    jwt_headers = {
-        "alg": "RS384",
-        "typ": "JWT"
-    }
-    now = int(time.time())
-    jwt_payload = {
-        "iss": client_id,
-        "sub": client_id,
-        "aud": token_url,
+    current_time = int(time.time())
+    payload = {
+        "iss": CLIENT_ID,
+        "sub": CLIENT_ID,
+        "aud": TOKEN_URL,
         "jti": str(uuid.uuid4()),
-        "exp": now + 300,  # 5 minutes expiration
-        "nbf": now,
-        "iat": now
+        "exp": current_time + 300,  # Expires in 5 minutes
+        "nbf": current_time,
+        "iat": current_time
     }
-    return jwt.encode(jwt_payload, private_key, algorithm="RS384", headers=jwt_headers)
+
+    with open(PRIVATE_KEY_PATH, "r") as key_file:
+        private_key = key_file.read()
+
+    jwt_token = jwt.encode(payload, private_key, algorithm="RS384")
+    logging.info(f"✅ JWT successfully created for authentication.")
+
+    return jwt_token
 
 
-@app.get("/get-token", response_model=TokenResponse)
-async def get_token():
-    """Fetch OAuth Token from Epic"""
+# Function to get an access token from Epic
+def get_access_token():
     jwt_token = generate_jwt()
-    token_data = {
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {
         "grant_type": "client_credentials",
+        "client_id": CLIENT_ID,
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion": jwt_token
     }
 
-    response = requests.post(token_url, data=token_data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    logging.info(f"🔄 Requesting access token from Epic...")
+
+    response = requests.post(TOKEN_URL, headers=headers, data=data)
 
     if response.status_code == 200:
+        access_token = response.json().get("access_token")
+        logging.info(f"✅ Authentication successful. Access token received: {access_token[:10]}... (truncated)")
+        return access_token
+    else:
+        logging.error(f"❌ Authentication failed: {response.text}")
+        raise HTTPException(status_code=response.status_code, detail="Authentication failed")
+
+
+# API to fetch Patient resource
+@app.get("/patient/{patient_id}")
+def get_patient(patient_id: str):
+    access_token = get_access_token()
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = f"{FHIR_BASE_URL}/Patient/{patient_id}"
+
+    logging.info(f"🔄 Fetching patient resource: {url}")
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        logging.info(f"✅ Successfully retrieved patient data.")
         return response.json()
     else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-
-
-@app.get("/get-patient", response_model=PatientResponse)
-async def get_patient():
-    """Fetch Patient Resource from Epic"""
-    token_response = await get_token()
-    access_token = token_response["access_token"]
-
-    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/fhir+json"}
-    response = requests.get(fhir_url, headers=headers)
-
-    if response.status_code == 200:
-        return {"status_code": 200, "data": response.json()}
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-
-# Run with: uvicorn script_name:app --reload
+        logging.error(f"❌ Failed to fetch patient data: {response.text}")
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch patient data")
