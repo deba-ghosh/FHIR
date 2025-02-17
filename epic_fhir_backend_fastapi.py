@@ -1,3 +1,5 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 import json
 import time
 import logging
@@ -15,6 +17,9 @@ CLIENT_ID = '4220d596-97d7-4488-a517-989486bdcec5'
 TOKEN_URL = 'https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token'
 FHIR_SERVER_URL = 'https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4'
 FHIR_ID = "erXuFYUfucBZaryVksYEcMg3"  # Replace with actual FHIR ID for the patient
+
+# Initialize FastAPI
+app = FastAPI()
 
 
 # Generate JWT signed with the private key
@@ -39,7 +44,7 @@ def generate_jwt():
         "jti": jti,
         "exp": int(exp.timestamp()),  # Expiration time
         "nbf": int(iat.timestamp()),  # Not before time
-        "iat": int(iat.timestamp())   # Issued at time
+        "iat": int(iat.timestamp())  # Issued at time
     }
 
     # Read the private key (replace with your key file path)
@@ -114,8 +119,9 @@ def get_patient_data(access_token):
         raise
 
 
-# Main function to authenticate and call the Patient resource
-def main():
+# FastAPI endpoint to get patient data with parsed HTML output
+@app.get("/get_patient_data", response_class=HTMLResponse)
+async def get_patient_data_endpoint():
     try:
         # Step 1: Generate JWT
         jwt_token = generate_jwt()
@@ -127,12 +133,47 @@ def main():
         # Step 3: Call the Patient resource
         patient_data = get_patient_data(access_token)
 
-        # Print the patient data (for testing purposes)
-        logger.info(f"Patient data: {json.dumps(patient_data, indent=2)}")
+        # Generate HTML response with parsed data
+        html_content = f"""
+        <html>
+            <head>
+                <title>Patient Data</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        margin: 20px;
+                    }}
+                    table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                    }}
+                    table, th, td {{
+                        border: 1px solid #ddd;
+                        padding: 8px;
+                        text-align: left;
+                    }}
+                    th {{
+                        background-color: #f2f2f2;
+                    }}
+                </style>
+            </head>
+            <body>
+                <h1>Patient Information</h1>
+                <table>
+                    <tr><th>Field</th><th>Value</th></tr>
+                    <tr><td><strong>Name</strong></td><td>{patient_data['name'][0]['text']}</td></tr>
+                    <tr><td><strong>Gender</strong></td><td>{patient_data['gender']}</td></tr>
+                    <tr><td><strong>Birth Date</strong></td><td>{patient_data['birthDate']}</td></tr>
+                    <tr><td><strong>Phone</strong></td><td>{', '.join([t['value'] for t in patient_data['telecom'] if t['system'] == 'phone'])}</td></tr>
+                    <tr><td><strong>Email</strong></td><td>{', '.join([t['value'] for t in patient_data['telecom'] if t['system'] == 'email'])}</td></tr>
+                    <tr><td><strong>Address</strong></td><td>{', '.join([f"{a['line'][0]}, {a['city']}, {a['state']} {a['postalCode']}" for a in patient_data['address']])}</td></tr>
+                    <tr><td><strong>Marital Status</strong></td><td>{patient_data['maritalStatus']['text']}</td></tr>
+                </table>
+            </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
 
     except Exception as e:
         logger.error(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    main()
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
