@@ -16,7 +16,6 @@ TOKEN_URL = 'https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token'
 FHIR_SERVER_URL = 'https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4'
 FHIR_ID = "erXuFYUfucBZaryVksYEcMg3"  # Replace with actual FHIR ID for the patient
 
-
 # Generate JWT signed with the private key
 def generate_jwt():
     """Generate a JWT for authentication."""
